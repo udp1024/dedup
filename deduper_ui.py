@@ -1,0 +1,146 @@
+import os
+import shutil
+import objc
+from Cocoa import *
+from Foundation import *
+from AppKit import *
+from deduper_backend import find_duplicates
+
+
+# -----------------------------
+# Model Objects
+# -----------------------------
+
+class DuplicateItem(NSObject):
+    """Represents a group of duplicate files (same hash)."""
+
+    def initWithName_files_(self, name, files):
+        self = objc.super(DuplicateItem, self).init()
+        if self:
+            self.name = name
+            self.files = files
+            self.children = [FileItem.alloc().initWithPath_(f) for f in files]
+        return self
+
+
+class FileItem(NSObject):
+    """Represents a single file inside a duplicate group."""
+
+    def initWithPath_(self, path):
+        self = objc.super(FileItem, self).init()
+        if self:
+            self.path = path
+            self.selected = False
+        return self
+
+
+# -----------------------------
+# UI Delegate
+# -----------------------------
+
+class AppDelegate(NSObject):
+    def applicationDidFinishLaunching_(self, notification):
+        self.buildUI()
+
+    def buildUI(self):
+        # Main window
+        self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(200, 200, 700, 500),
+            NSWindowStyleMaskTitled
+            | NSWindowStyleMaskClosable
+            | NSWindowStyleMaskResizable,
+            NSBackingStoreBuffered,
+            False
+        )
+        self.window.setTitle_("Duplicate File Review")
+
+        # Scroll view
+        scroll = NSScrollView.alloc().initWithFrame_(self.window.contentView().frame())
+        scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+
+        # Outline view
+        self.outline = NSOutlineView.alloc().initWithFrame_(scroll.frame())
+        self.outline.setDelegate_(self)
+        self.outline.setDataSource_(self)
+
+        # Column
+        col = NSTableColumn.alloc().initWithIdentifier_("Files")
+        col.setWidth_(680)
+        self.outline.addTableColumn_(col)
+        self.outline.setOutlineTableColumn_(col)
+
+        scroll.setDocumentView_(self.outline)
+        self.window.contentView().addSubview_(scroll)
+
+        # Delete button
+        delete_button = NSButton.alloc().initWithFrame_(NSMakeRect(10, 10, 150, 30))
+        delete_button.setTitle_("Delete Selected")
+        delete_button.setTarget_(self)
+        delete_button.setAction_("deleteSelected:")
+        self.window.contentView().addSubview_(delete_button)
+
+        self.window.makeKeyAndOrderFront_(None)
+
+    def loadData_(self, duplicates):
+        self.data = []
+        for h, files in duplicates.items():
+            item = DuplicateItem.alloc().initWithName_files_(h, files)
+            self.data.append(item)
+        self.outline.reloadData()
+
+    # -----------------------------
+    # OutlineView Data Source
+    # -----------------------------
+
+    def outlineView_numberOfChildrenOfItem_(self, view, item):
+        if item is None:
+            return len(self.data)
+        return len(item.children)
+
+    def outlineView_child_ofItem_(self, view, index, item):
+        if item is None:
+            return self.data[index]
+        return item.children[index]
+
+    def outlineView_isItemExpandable_(self, view, item):
+        return hasattr(item, "children")
+
+    def outlineView_objectValueForTableColumn_byItem_(self, view, col, item):
+        if hasattr(item, "children"):
+            return f"Duplicate group: {item.name}"
+        return item.path
+
+    # -----------------------------
+    # Delete Action
+    # -----------------------------
+
+    @objc.IBAction
+    def deleteSelected_(self, sender):
+        for group in self.data:
+            for file_item in group.children:
+                if file_item.selected:
+                    try:
+                        shutil.move(file_item.path, os.path.expanduser("~/.Trash"))
+                    except Exception as e:
+                        print(f"Error deleting {file_item.path}: {e}")
+
+        NSApp.stop_(None)
+
+
+# -----------------------------
+# App Runner
+# -----------------------------
+
+def run_ui(root):
+    duplicates = find_duplicates(root)
+    app = NSApplication.sharedApplication()
+    delegate = AppDelegate.alloc().init()
+    app.setDelegate_(delegate)
+    delegate.loadData_(duplicates)
+    app.run()
+
+
+if __name__ == "__main__":
+    root = os.path.expanduser("~/OneDrive")  # adjust if needed
+    run_ui(root)
+
